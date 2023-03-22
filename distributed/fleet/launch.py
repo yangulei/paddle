@@ -144,6 +144,18 @@ see: http://www.paddlepaddle.org/documentation/docs/zh/1.6/user_guides/howto/tra
             "--gpus=\"0,1,2,3\" will launch four training processes each bound to one gpu.",
         )
         base_group.add_argument("--selected_gpus", dest="gpus")
+    
+    
+    if framework.core.is_compiled_with_custom_device('intel_gpu'):
+        base_group.add_argument(
+            "--intel_gpus",
+            type=str,
+            default=None,
+            help="It's for intel gpu training."
+            "For example:"
+            "--intel_gpus=\"0,1,2,3\" will launch four training processes each bound to one gpu.",
+        )
+        base_group.add_argument("--selected_intel_gpus", dest="intel_gpus")
 
     if framework.core.is_compiled_with_xpu():
         base_group.add_argument(

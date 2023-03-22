@@ -58,6 +58,7 @@ class DeviceMode:
     ASCEND_NPU = 3
     UNKNOWN = 3
     MLU = 4
+    INTEL_GPU = 5
 
 
 class Cluster:
@@ -738,6 +739,40 @@ def get_gpus(gpus):
     return res_gpus
 
 
+def get_intel_gpus(gpus):
+    if gpus is None:
+        gpus_num = framework.core.get_custom_device_count("intel_gpu")
+        res_gpus = [str(x) for x in range(0, gpus_num)]
+    else:
+        cuda_visible_devices = os.getenv("CUDA_VISIBLE_DEVICES")
+        if cuda_visible_devices is None or cuda_visible_devices == "":
+            res_gpus = [x.strip() for x in gpus.split(',')]
+        else:
+            # change gpus into relative values
+            # e.g. CUDA_VISIBLE_DEVICES=4,5,6,7; args.gpus=4,5,6,7;
+            # therefore gpus=0,1,2,3
+            cuda_visible_devices_list = cuda_visible_devices.split(',')
+            for x in gpus.split(','):
+                assert x in cuda_visible_devices_list, (
+                    "Can't find "
+                    "your gpus %s in CUDA_VISIBLE_DEVICES[%s]."
+                    % (x, cuda_visible_devices)
+                )
+            res_gpus = [
+                cuda_visible_devices_list.index(x.strip())
+                for x in gpus.split(',')
+            ]
+            logger.info(
+                "Change selected_gpus into reletive values. --ips:{} "
+                "will change into relative_ips:{} according to your "
+                "CUDA_VISIBLE_DEVICES:{}".format(
+                    gpus, res_gpus, cuda_visible_devices_list
+                )
+            )
+
+    return res_gpus
+
+
 def get_xpus(xpus):
     if xpus is None:
         xpus_num = framework.core.get_xpu_device_count()
@@ -882,6 +917,10 @@ def get_device_mode(backend):
     if backend == 'gloo':
         print("launch train in CPU mode")
         return DeviceMode.CPU
+    
+    if backend == 'xccl' and framework.core.is_compiled_with_custom_device('intel_gpu'):
+        print("launch train in intel GPU mode")
+        return DeviceMode.INTEL_GPU
 
     raise RuntimeError("Don't supported devices")
 
@@ -894,6 +933,19 @@ def get_device_proc_info(args):
     devices_per_proc = []
     if device_mode == DeviceMode.GPU:
         gpus = get_gpus(args.gpus)
+        if args.nproc_per_node is not None:
+            assert (
+                len(gpus) % int(args.nproc_per_node)
+            ) == 0, "gpus' number:{} mod args.nproc_per_node:{} must == 0".format(
+                len(gpus), args.nproc_per_node
+            )
+
+            n = int(len(gpus) / int(args.nproc_per_node))
+            devices_per_proc = [gpus[i : i + n] for i in range(0, len(gpus), n)]
+        else:
+            devices_per_proc = gpus
+    elif device_mode == DeviceMode.INTEL_GPU:
+        gpus = get_intel_gpus(args.intel_gpus)
         if args.nproc_per_node is not None:
             assert (
                 len(gpus) % int(args.nproc_per_node)
