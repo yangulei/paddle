@@ -57,6 +57,7 @@ class DeviceMode:
     XPU = 2
     ASCEND_NPU = 3
     UNKNOWN = 3
+    INTEL_GPU = 5
 
 
 class Cluster:
@@ -302,6 +303,7 @@ def get_cluster(
             if (
                 device_mode == DeviceMode.GPU
                 or device_mode == DeviceMode.ASCEND_NPU
+                or device_mode == DeviceMode.INTEL_GPU
             ):
                 if isinstance(devices_per_proc[i], (list, tuple)):
                     trainer.accelerators.extend(devices_per_proc[i])
@@ -552,6 +554,10 @@ def start_local_trainers(
             proc_env["FLAGS_selected_npus"] = "%s" % ",".join(
                 [str(g) for g in t.accelerators]
             )
+        elif len(t.accelerators) > 0 and pod.device_mode == DeviceMode.INTEL_GPU:
+            proc_env["FLAGS_selected_intel_gpus"] = "%s" % ",".join(
+                [str(g) for g in t.accelerators]
+            )
 
         if len(t.accelerators) > 0:
             proc_env["FLAGS_selected_accelerators"] = "%s" % ",".join(
@@ -723,6 +729,39 @@ def get_gpus(gpus):
 
     return res_gpus
 
+def get_intel_gpus(gpus):
+    if gpus is None:
+        gpus_num = framework.core.get_custom_device_count("intel_gpu")
+        res_gpus = [str(x) for x in range(0, gpus_num)]
+    else:
+        cuda_visible_devices = os.getenv("CUDA_VISIBLE_DEVICES")
+        if cuda_visible_devices is None or cuda_visible_devices == "":
+            res_gpus = [x.strip() for x in gpus.split(',')]
+        else:
+            # change gpus into relative values
+            # e.g. CUDA_VISIBLE_DEVICES=4,5,6,7; args.gpus=4,5,6,7;
+            # therefore gpus=0,1,2,3
+            cuda_visible_devices_list = cuda_visible_devices.split(',')
+            for x in gpus.split(','):
+                assert x in cuda_visible_devices_list, (
+                    "Can't find "
+                    "your gpus %s in CUDA_VISIBLE_DEVICES[%s]."
+                    % (x, cuda_visible_devices)
+                )
+            res_gpus = [
+                cuda_visible_devices_list.index(x.strip())
+                for x in gpus.split(',')
+            ]
+            logger.info(
+                "Change selected_gpus into reletive values. --ips:{} "
+                "will change into relative_ips:{} according to your "
+                "CUDA_VISIBLE_DEVICES:{}".format(
+                    gpus, res_gpus, cuda_visible_devices_list
+                )
+            )
+
+    return res_gpus
+
 
 def get_xpus(xpus):
     if xpus is None:
@@ -826,6 +865,10 @@ def get_device_mode(backend):
     if backend == 'bkcl' and framework.core.get_xpu_device_count() > 0:
         print("launch train in XPU mode")
         return DeviceMode.XPU
+    
+    if backend == 'xccl' and framework.core.is_compiled_with_custom_device('intel_gpu'):
+        print("launch train in intel GPU mode")
+        return DeviceMode.INTEL_GPU
 
     if backend == 'gloo':
         print("launch train in CPU mode")
@@ -853,6 +896,19 @@ def get_device_proc_info(args):
             devices_per_proc = [gpus[i : i + n] for i in range(0, len(gpus), n)]
         else:
             devices_per_proc = gpus
+    elif device_mode == DeviceMode.INTEL_GPU:
+        intel_gpus = get_intel_gpus(args.intel_gpus)
+        if args.nproc_per_node is not None:
+            assert (
+                len(intel_gpus) % int(args.nproc_per_node)
+            ) == 0, "intel_gpus' number:{} mod args.nproc_per_node:{} must == 0".format(
+                len(intel_gpus), args.nproc_per_node
+            )
+
+            n = int(len(intel_gpus) / int(args.nproc_per_node))
+            devices_per_proc = [intel_gpus[i: i + n] for i in range(0, len(intel_gpus), n)]
+        else:
+            devices_per_proc = intel_gpus
     elif device_mode == DeviceMode.ASCEND_NPU:
         npus = get_npus(args.npus)
         if args.nproc_per_node is not None:
