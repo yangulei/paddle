@@ -1,0 +1,6 @@
+*.h
+*.hpp
+*.pyc
+*.so
+*.so.*
+*.sample
