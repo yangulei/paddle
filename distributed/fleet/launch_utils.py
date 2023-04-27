@@ -55,7 +55,8 @@ class DeviceMode:
     GPU = 1
     KUNLUN = 2
     XPU = 2
-    UNKNOWN = 3
+    INTEL_GPU = 3
+    UNKNOWN = 4
 
 
 class Cluster:
@@ -298,7 +299,7 @@ def get_cluster(
         ), "current trainer_endpoints size should be greater equal than acclerators size."
         for i in range(len(devices_per_proc)):
             trainer = Trainer()
-            if device_mode == DeviceMode.GPU:
+            if device_mode == DeviceMode.GPU or device_mode == DeviceMode.INTEL_GPU:
                 if isinstance(devices_per_proc[i], (list, tuple)):
                     trainer.accelerators.extend(devices_per_proc[i])
                     pod.accelerators.extend(devices_per_proc[i])
@@ -542,6 +543,11 @@ def start_local_trainers(
                 [str(g) for g in t.accelerators]
             )
 
+        if len(t.accelerators) > 0 and pod.device_mode == DeviceMode.INTEL_GPU:
+            proc_env["FLAGS_selected_intel_gpus"] = "%s" % ",".join(
+                [str(g) for g in t.accelerators]
+            )
+
         if len(t.accelerators) > 0:
             proc_env["FLAGS_selected_accelerators"] = "%s" % ",".join(
                 [str(g) for g in t.accelerators]
@@ -712,6 +718,14 @@ def get_gpus(gpus):
 
     return res_gpus
 
+def get_intel_gpus(gpus):
+    if gpus is None:
+        gpus_num = framework.core.get_custom_device_count("intel_gpu")
+        res_gpus = [str(x) for x in range(0, gpus_num)]
+    else:
+        res_gpus = [str(x) for x in gpus.split(",")]
+
+    return res_gpus
 
 def get_xpus(xpus):
     if xpus is None:
@@ -771,7 +785,11 @@ def get_device_mode(backend):
     if backend == 'bkcl' and framework.core.get_xpu_device_count() > 0:
         print("launch train in XPU mode")
         return DeviceMode.XPU
-
+    
+    if backend == 'xccl' and framework.core.is_compiled_with_custom_device('intel_gpu'):
+        print("launch train in intel GPU mode")
+        return DeviceMode.INTEL_GPU
+    
     if backend == 'gloo':
         print("launch train in CPU mode")
         return DeviceMode.CPU
@@ -798,6 +816,19 @@ def get_device_proc_info(args):
             devices_per_proc = [gpus[i : i + n] for i in range(0, len(gpus), n)]
         else:
             devices_per_proc = gpus
+    elif device_mode == DeviceMode.INTEL_GPU:
+        intel_gpus = get_intel_gpus(args.intel_gpus)
+        if args.nproc_per_node is not None:
+            assert (
+                len(intel_gpus) % int(args.nproc_per_node)
+            ) == 0, "intel_gpus' number:{} mod args.nproc_per_node:{} must == 0".format(
+                len(intel_gpus), args.nproc_per_node
+            )
+
+            n = int(len(intel_gpus) / int(args.nproc_per_node))
+            devices_per_proc = [intel_gpus[i: i + n] for i in range(0, len(intel_gpus), n)]
+        else:
+            devices_per_proc = intel_gpus
     elif device_mode == DeviceMode.XPU:
         xpus = get_xpus(args.xpus)
         if args.nproc_per_node is not None:
